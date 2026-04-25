@@ -22,6 +22,9 @@ TMP_DIR_PATH = r"Z:\Documents\penn-state-gis\GEOG485\final-project\gpkg-images"
 GDB_GPKG_PRIMARY_KEY = "gpkg_primary_key"
 GLOBAL_ID_FIELD = "GlobalID"
 
+# The following GPKG{X} classes are data access objects for GeoPackage tables described
+# in the specification, currently version 1.4.0: https://www.geopackage.org/spec140/index.html
+
 class GPKGExtensionRecord:
     def __init__(self, table_name, column_name, extension_name, definition, scope):
         self.table_name = table_name
@@ -86,14 +89,12 @@ class GPKGMediaRecord:
         return f"GPKGRelationMapRecord(identifier={self.identifier}, data={self.data}, \
 content_type={self.content_type})"
 
-def get_gpkg_tables(db_cursor):
-    query = db_cursor.execute("""
-        SELECT name
-        FROM sqlite_schema
-        WHERE type='table' AND name NOT LIKE 'sqlite_%';
-    """)
-    return [table_name for (table_name, *_) in query.fetchall()]
+def log(msg):
+    arcpy.AddMessage(msg)
 
+# Find all columns in a table that are marked as primary keys
+# This is useful if you need to query a table by primary key without
+# knowing it beforehand.
 def get_primary_key_columns(db_cursor, table_name):
     query = db_cursor.execute(f"""
         SELECT name
@@ -102,6 +103,8 @@ def get_primary_key_columns(db_cursor, table_name):
     """)
     return [column_name for (column_name, *_) in query.fetchall()]
 
+# Find all gpkg_extensions records matching the gpkg_related_tables extension
+# described here: https://docs.ogc.org/is/18-000/18-000.html
 def get_gpkg_related_tables_exts(db_cursor):
     query = db_cursor.execute("""
         SELECT table_name, column_name, extension_name, definition, scope
@@ -110,6 +113,7 @@ def get_gpkg_related_tables_exts(db_cursor):
     """)
     return [GPKGExtensionRecord(row[0], row[1], row[2], row[3], row[4]) for row in query.fetchall()]
 
+# Find all relations that adhere to the media conformance class: https://docs.ogc.org/is/18-000/18-000.html#_media
 def get_gpkg_media_relations(db_cursor,  base_table_name):
     conditional_clause = "relation_name='media'"
 
@@ -124,6 +128,7 @@ def get_gpkg_media_relations(db_cursor,  base_table_name):
     """)
     return [GPKGRelationRecord(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in query.fetchall()]
 
+# Given a specific gpkgext_relation record, find all media records in the tables described by it.
 def get_gpkg_related_media(db_cursor, gpkg_relation, feature_id):
     query = db_cursor.execute(f"""
         SELECT media.'{gpkg_relation.related_primary_column}', data, content_type
@@ -134,18 +139,18 @@ def get_gpkg_related_media(db_cursor, gpkg_relation, feature_id):
     """)
     return [GPKGMediaRecord(identifier=row[0], data=row[1], content_type=row[2]) for row in query.fetchall()]
 
-def log(msg):
-    arcpy.AddMessage(msg)
-
-def reportError(msg):
-    arcpy.AddError(msg)
-
+# GeoPackages allow more symbols in the table names than Geodatabases do, which only allow
+# underscores. Convert all other symbols to underscores.
 def gpkg_table_name_to_gdb(table_name):
     return re.sub(r'[^a-zA-Z0-9_]', '_', table_name)
 
 def copy_fc_to_gdb(gpkg_fc, pk_column, gdb, table_name):
     gdb_layer = f"{gdb}/{table_name}"
 
+    # ExportFeatures and other geoprocessing tools typically strip out the auto-incrementing
+    # primary key for the table during the conversion. We need that key to match
+    # the media records to the correct feature, so add a specific mapping for it to
+    # a new column that we can reference later.
     field_mappings = arcpy.FieldMappings()
     field_mappings.addTable(gpkg_fc)
     gpkg_id_field_map = arcpy.FieldMap()
@@ -157,11 +162,13 @@ def copy_fc_to_gdb(gpkg_fc, pk_column, gdb, table_name):
     field_mappings.addFieldMap(gpkg_id_field_map)
 
     arcpy.conversion.ExportFeatures(gpkg_fc, gdb_layer, None, None, field_mappings)
+
     return gdb_layer
 
-def extract_images(gpkg_db_cursor, fc_relations, gdb_layer, img_dir, img_match_table, match_field, file_field):
+# Given a set of geopackage media relation records for a geodatbase layer, extract the images from the geopackage
+# and attach them to the appropriate records in the geodatabase.
+def attach_related_images(gpkg_db_cursor, fc_relations, gdb_layer, img_dir, img_match_table, match_field, file_field):
     gdb_table_name = arcpy.Describe(gdb_layer).name
-    log("Extracting images")
 
     if not arcpy.Exists(img_dir):
         log(f"Creating images folder: {img_dir}")
@@ -175,9 +182,8 @@ def extract_images(gpkg_db_cursor, fc_relations, gdb_layer, img_dir, img_match_t
                     feature_global_id = row[1]
 
                     for fc_relation in fc_relations:
-                        safe_relation_table_name = gpkg_table_name_to_gdb(fc_relation.related_table_name)
-
                         related_media = get_gpkg_related_media(gpkg_db_cursor, fc_relation, feature_primary_key)
+                        safe_relation_table_name = gpkg_table_name_to_gdb(fc_relation.related_table_name)
 
                         for media_record in related_media:
                             file_ext = mimetypes.guess_extension(media_record.content_type)
@@ -190,10 +196,7 @@ def extract_images(gpkg_db_cursor, fc_relations, gdb_layer, img_dir, img_match_t
                             insert_cursor.insertRow([feature_global_id, file_name])
 
             del insert_cursor
-
         del search_cursor
-
-        log(f"Adding attachments to {gdb_table_name}.")
 
         arcpy.management.AddAttachments(
             gdb_layer,
@@ -204,6 +207,7 @@ def extract_images(gpkg_db_cursor, fc_relations, gdb_layer, img_dir, img_match_t
             img_dir
         )
     except Exception:
+        # re-raise any exceptions. This block is only here to ensure the 'finally' statement runs.
         raise
     finally:
         # ArcGIS stores the images in its own format inside the GDB once attachments
@@ -219,33 +223,39 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
     db = sqlite3.connect(gpkg)
     db_cursor = db.cursor()
 
-    extensions = get_gpkg_related_tables_exts(db_cursor)
-    if len(extensions) < 1:
-        log("No related table extensions found.")
-        return
-
     tmp_img_folder_path = tmp_dir + "/" + str(uuid.uuid4())
-
-    log("Creating the image mapping table")
-
     # TODO: should this be defined in the loop and have one for each feature class?
     img_match_field_name = "MatchID"
     img_match_file_field_name = "Filename"
     img_match_table_name = "image_matches"
-    img_match_table = arcpy.management.CreateTable(gdb, img_match_table_name)
-    arcpy.management.AddFields(
-        img_match_table,
-        [
-            [img_match_field_name, "TEXT"],
-            [img_match_file_field_name, "TEXT", img_match_file_field_name, 260]
-        ]
-    )
+
+    img_match_table = None
+
+    extensions = get_gpkg_related_tables_exts(db_cursor)
+    if len(extensions) > 0:
+        log("Creating the image mapping table")
+
+        # I can't use arcpy.management.GenerateAttachmentMatchTable because there appears to be a
+        # bug where it creates the match field as a BigInteger type, and the arcpy.management.AddAttachments
+        # tool doesn't accept that as a valid type for matching. So instead I create a custom
+        # mapping table and utiliz the GlobalID assigned to features later on in this function.
+        img_match_table = arcpy.management.CreateTable(gdb, img_match_table_name)
+        arcpy.management.AddFields(
+            img_match_table,
+            [
+                [img_match_field_name, "TEXT"],
+                [img_match_file_field_name, "TEXT", img_match_file_field_name, 260]
+            ]
+        )
+    else:
+        log("No related table extensions found.")
+
 
     for gpkg_fc in gpkg_fcs:
         fc_desc = arcpy.da.Describe(gpkg_fc)
         fc_table_name = fc_desc['extension']
-        # file geodatabases don't allow special characters other than underscores
-        new_fc_name = gpkg_table_name_to_gdb(fc_table_name)
+        # File Geodatabases have stricter character requirements
+        gdb_fc_name = gpkg_table_name_to_gdb(fc_table_name)
 
         primary_key_column = None
         primary_key_candidates = get_primary_key_columns(db_cursor, fc_table_name)
@@ -259,28 +269,30 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
 
         log(
             f"Copying GeoPackage feature class to the Geodatabase gpkg name: \
-{fc_table_name} -> gdb name: {new_fc_name}"
+{fc_table_name} -> gdb name: {gdb_fc_name}"
         )
 
-        gdb_layer = copy_fc_to_gdb(gpkg_fc, primary_key_column, gdb, new_fc_name)
+        gdb_layer = copy_fc_to_gdb(gpkg_fc, primary_key_column, gdb, gdb_fc_name)
 
-        log(f"Adding global id to {new_fc_name} to support image attachments.")
+        if img_match_table is not None:
+            log(f"Adding global id to {gdb_fc_name} to support image attachments.")
 
-        arcpy.management.AddGlobalIDs(gdb_layer)
+            arcpy.management.AddGlobalIDs(gdb_layer)
 
-        log(f"Enabling attachments on {new_fc_name}.")
+            log(f"Enabling attachments on {gdb_fc_name}.")
 
-        arcpy.management.EnableAttachments(gdb_layer)
+            arcpy.management.EnableAttachments(gdb_layer)
 
-        fc_relations = get_gpkg_media_relations(db_cursor, fc_table_name)
-        if len(fc_relations) > 0:
-            extract_images(db_cursor, fc_relations, gdb_layer, tmp_img_folder_path, img_match_table, img_match_field_name, img_match_file_field_name)
-        else:
-            log(f"No related media tables found for {fc_table_name}")
+            fc_relations = get_gpkg_media_relations(db_cursor, fc_table_name)
+            if len(fc_relations) > 0:
+                log(f"Attaching images for {len(fc_relations)} relations to {gdb_layer}")
+                attach_related_images(db_cursor, fc_relations, gdb_layer, tmp_img_folder_path, img_match_table, img_match_field_name, img_match_file_field_name)
+            else:
+                log(f"No related media tables found for {fc_table_name}")
 
-    log("Deleting the image match table now that it's no longer needed.")
-    arcpy.management.Delete(img_match_table)
-
+    if img_match_table is not None:
+        log("Deleting the image match table now that it's no longer needed.")
+        arcpy.management.Delete(img_match_table)
 
 def main(gpkg_path=GPKG_PATH, output_gdb_path=OUTPUT_GDB_PATH, tmp_dir=TMP_DIR_PATH):
     delete_gdb_on_failure = False
@@ -304,7 +316,8 @@ def main(gpkg_path=GPKG_PATH, output_gdb_path=OUTPUT_GDB_PATH, tmp_dir=TMP_DIR_P
         if output_type == 'Workspace':
 
             # TODO: is there a more detailed check I can do? Other things qualify as
-            # workspaces, too. If provided via script tool, I can do validations there as well.
+            # workspaces, too. If provided via script tool, I can do validations on that input,
+            # but if running as a standalone script this could cause unhandled errors.
             log("Output is a geodatabase.")
             gdb = output_gdb_path
 
@@ -341,17 +354,17 @@ please rename either the GeoPackage or the Geodatabase and try again.")
         error_msg = str(e)
         if "000464" in error_msg or "000210" in error_msg:
 
-            reportError("ERROR: Unable to get an exclusive lock on the data. Ensure that it is not open \
+            arcpy.AddError("ERROR: Unable to get an exclusive lock on the data. Ensure that it is not open \
 in any other programs, then try again.")
         else:
-            reportError("Unhandled execution error. Please restore your dataset to its original \
+            arcpy.AddError("Unhandled execution error. Please restore your dataset to its original \
 condition, close all other programs that may be accessing the data, and try again.")
-            reportError(f"Received: {error_msg}")
+            arcpy.AddError(f"Received: {error_msg}")
 
     except Exception as e:
         failed_to_complete = True
 
-        reportError(f"Unknown Error: {str(e)}")
+        arcpy.AddError(f"Unknown Error: {str(e)}")
 
     finally:
         # Ensure any lockfiles are cleaned up since the script is complete.
