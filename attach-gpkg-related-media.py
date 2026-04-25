@@ -1,5 +1,5 @@
 #---------------------------------------------------------------------------------------
-# Name:        test_gpkg
+# Name:        attach_gpkg_related_media
 # Purpose:
 #
 # Author:      mikeroncone
@@ -325,6 +325,9 @@ def main(gpkg_path=GPKG_PATH, output_gdb_path=OUTPUT_GDB_PATH, image_folder_path
         if delete_image_folder_on_complete and arcpy.Exists(image_folder_path):
             log(f"Removing image folder we created: {image_folder_path}")
             shutil.rmtree(pathlib.Path(image_folder_path))
+
+        log("Deleting the image match table now that it's no longer needed.")
+        arcpy.management.Delete(image_match_table)
 
         log("Complete.")
     except arcpy.ExecuteError as e:
