@@ -226,7 +226,6 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
     db_cursor = db.cursor()
 
     tmp_img_folder_path = tmp_dir + "/" + str(uuid.uuid4())
-    # TODO: should this be defined in the loop and have one for each feature class?
     img_match_field_name = "MatchID"
     img_match_file_field_name = "Filename"
     img_match_table_name = "image_matches"
@@ -238,9 +237,10 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
         log("Creating the image mapping table")
 
         # I can't use arcpy.management.GenerateAttachmentMatchTable because there appears to be a
-        # bug where it creates the match field as a BigInteger type, and the arcpy.management.AddAttachments
-        # tool doesn't accept that as a valid type for matching. So instead I create a custom
-        # mapping table and utiliz the GlobalID assigned to features later on in this function.
+        # bug at time of writing where it creates the match field as a BigInteger type,
+        # and the arcpy.management.AddAttachments tool doesn't accept that as a valid type
+        # for matching. So instead I create a custom mapping table and utilize the GlobalID
+        # assigned to features later on in this function.
         img_match_table = arcpy.management.CreateTable(gdb, img_match_table_name)
         arcpy.management.AddFields(
             img_match_table,
@@ -269,10 +269,8 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
             primary_key_column = primary_key_candidates[0]
 
 
-        log(
-            f"Copying GeoPackage feature class to the Geodatabase gpkg name: \
-{fc_table_name} -> gdb name: {gdb_fc_name}"
-        )
+        log(f"Copying GeoPackage feature class to the Geodatabase gpkg name: \
+{fc_table_name} -> gdb name: {gdb_fc_name}")
 
         gdb_layer = copy_fc_to_gdb(gpkg_fc, primary_key_column, gdb, gdb_fc_name)
 
@@ -287,10 +285,10 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
 
             fc_relations = get_gpkg_media_relations(db_cursor, fc_table_name)
             if len(fc_relations) > 0:
-                log(f"Attaching images for {len(fc_relations)} relations to {gdb_layer}")
+                log(f"Attaching images for {len(fc_relations)} relations to {gdb_fc_name}.")
                 attach_related_images(db_cursor, fc_relations, gdb_layer, tmp_img_folder_path, img_match_table, img_match_field_name, img_match_file_field_name)
             else:
-                log(f"No related media tables found for {fc_table_name}")
+                log(f"No related media tables found for {gdb_fc_name}.")
 
     if img_match_table is not None:
         log("Deleting the image match table now that it's no longer needed.")
@@ -316,7 +314,6 @@ def main(gpkg_path, output_gdb_path, tmp_dir):
         gdb = None
         output_type = arcpy.Describe(output_gdb_path).dataType
         if output_type == 'Workspace':
-
             # TODO: is there a more detailed check I can do? Other things qualify as
             # workspaces, too. If provided via script tool, I can do validations on that input,
             # but if running as a standalone script this could cause unhandled errors.
@@ -324,7 +321,6 @@ def main(gpkg_path, output_gdb_path, tmp_dir):
             gdb = output_gdb_path
 
         elif output_type == 'Folder':
-
             new_gdb_name = gpkg_desc['name'].replace('.gpkg', '')
             log(f"Creating GDB: {new_gdb_name} at {output_gdb_path}")
             new_file_path = f"{output_gdb_path}/{new_gdb_name}.gdb"
