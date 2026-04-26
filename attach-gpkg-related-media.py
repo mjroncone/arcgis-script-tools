@@ -14,6 +14,8 @@ import pathlib
 import shutil
 import mimetypes
 import uuid
+import argparse
+import sys
 
 GPKG_PATH = r"Z:\Documents\penn-state-gis\GEOG485\final-project\related-tables-gpkg.gpkg"
 OUTPUT_GDB_PATH = r"Z:\Documents\penn-state-gis\GEOG485\final-project/"
@@ -294,7 +296,7 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
         log("Deleting the image match table now that it's no longer needed.")
         arcpy.management.Delete(img_match_table)
 
-def main(gpkg_path=GPKG_PATH, output_gdb_path=OUTPUT_GDB_PATH, tmp_dir=TMP_DIR_PATH):
+def main(gpkg_path, output_gdb_path, tmp_dir):
     delete_gdb_on_failure = False
     failed_to_complete = False
     delete_tmp_folder_on_complete = False
@@ -380,4 +382,27 @@ condition, close all other programs that may be accessing the data, and try agai
 
 
 if __name__ == '__main__':
-    main()
+    # If any additional arguments are provided, assume the script is being called from
+    # a command line and parse the expected arguments. Otherwise use the default fixtures
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(description="""
+    This script takes a GeoPackage and converts it to a File Geodatabase. If there are images
+    related to features through the Related Tables extension, it will attach them to the
+    File Geodatabase so they can be viewed in ArcGIS Pro.
+        """
+        )
+        parser.add_argument("gpkg_path",
+            help="A file path to a GeoPackage (.gpkg) file that may contain related table images."
+        )
+        parser.add_argument("gdb_path",
+            help="Either a path to a File Geodatabase where you want to append the data, or a \
+    folder where a Geodatabase can be created."
+        )
+        parser.add_argument("tmp_path",
+            help="A directory where it's safe for the script to create temporary image files, \
+    which is required for attaching them to the Geodatabase."
+        )
+        args = parser.parse_args()
+        main(args.gpkg_path, args.gdb_path, args.tmp_path)
+    else:
+        main(GPKG_PATH, OUTPUT_GDB_PATH, TMP_DIR_PATH)
