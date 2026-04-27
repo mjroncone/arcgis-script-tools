@@ -26,6 +26,7 @@ GLOBAL_ID_FIELD = "GlobalID"
 
 # The following GPKG{X} classes are data access objects for GeoPackage tables described
 # in the specification, currently version 1.4.0: https://www.geopackage.org/spec140/index.html
+# and the Related Tables Extension: https://docs.ogc.org/is/18-000/18-000.html
 
 class GPKGExtensionRecord:
     def __init__(self, table_name, column_name, extension_name, definition, scope):
