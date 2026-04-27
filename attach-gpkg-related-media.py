@@ -1,12 +1,3 @@
-#---------------------------------------------------------------------------------------
-# Name:        attach_gpkg_related_media
-# Purpose:
-#
-# Author:      mikeroncone
-#
-# Created:     04/2026
-#---------------------------------------------------------------------------------------
-
 import arcpy
 import sqlite3
 import re
@@ -15,14 +6,12 @@ import shutil
 import mimetypes
 import uuid
 import argparse
-import sys
-
-GPKG_PATH = r"Z:\Documents\penn-state-gis\GEOG485\final-project\related-tables-gpkg.gpkg"
-OUTPUT_GDB_PATH = r"Z:\Documents\penn-state-gis\GEOG485\final-project/"
-TMP_DIR_PATH = r"Z:\Documents\penn-state-gis\GEOG485\final-project\gpkg-images"
 
 GDB_GPKG_PRIMARY_KEY = "gpkg_primary_key"
 GLOBAL_ID_FIELD = "GlobalID"
+IMG_MATCH_FIELD_NAME = "MatchID"
+IMG_MATCH_FILE_FIELD_NAME = "Filename"
+IMG_MATCH_TABLE_NAME = "image_matches"
 
 # The following GPKG{X} classes are data access objects for GeoPackage tables described
 # in the specification, currently version 1.4.0: https://www.geopackage.org/spec140/index.html
@@ -91,9 +80,6 @@ class GPKGMediaRecord:
     def __repr__(self):
         return f"GPKGRelationMapRecord(identifier={self.identifier}, data={self.data}, \
 content_type={self.content_type})"
-
-def log(msg):
-    arcpy.AddMessage(msg)
 
 # Find all columns in a table that are marked as primary keys
 # This is useful if you need to query a table by primary key without
@@ -168,6 +154,9 @@ def copy_fc_to_gdb(gpkg_fc, pk_column, gdb, table_name):
 
     return gdb_layer
 
+def log(msg):
+    arcpy.AddMessage(msg)
+
 # Given a set of geopackage media relation records for a geodatbase layer, extract the images from the geopackage
 # and attach them to the appropriate records in the geodatabase.
 def attach_related_images(gpkg_db_cursor, fc_relations, gdb_layer, img_dir, img_match_table, match_field, file_field):
@@ -226,11 +215,7 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
     db = sqlite3.connect(gpkg)
     db_cursor = db.cursor()
 
-    tmp_img_folder_path = tmp_dir + "/" + str(uuid.uuid4())
-    img_match_field_name = "MatchID"
-    img_match_file_field_name = "Filename"
-    img_match_table_name = "image_matches"
-
+    tmp_img_folder_path = f"{tmp_dir}/{str(uuid.uuid4())}"
     img_match_table = None
 
     extensions = get_gpkg_related_tables_exts(db_cursor)
@@ -242,12 +227,12 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
         # and the arcpy.management.AddAttachments tool doesn't accept that as a valid type
         # for matching. So instead I create a custom mapping table and utilize the GlobalID
         # assigned to features later on in this function.
-        img_match_table = arcpy.management.CreateTable(gdb, img_match_table_name)
+        img_match_table = arcpy.management.CreateTable(gdb, IMG_MATCH_TABLE_NAME)
         arcpy.management.AddFields(
             img_match_table,
             [
-                [img_match_field_name, "TEXT"],
-                [img_match_file_field_name, "TEXT", img_match_file_field_name, 260]
+                [IMG_MATCH_FIELD_NAME, "TEXT"],
+                [IMG_MATCH_FILE_FIELD_NAME, "TEXT", IMG_MATCH_FILE_FIELD_NAME, 260]
             ]
         )
     else:
@@ -263,9 +248,11 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
         primary_key_column = None
         primary_key_candidates = get_primary_key_columns(db_cursor, fc_table_name)
         if len(primary_key_candidates) > 1:
-            raise ValueError(f"Table {fc_table_name} has a compound primary key, which is not yet supported.")
+            raise ValueError(f"Table {fc_table_name} has a compound primary key, which is \
+not supported.")
         elif len(primary_key_candidates) < 1:
-            raise ValueError(f"Unable to find a primary key for {fc_table_name}, which is required for related media extraction.")
+            raise ValueError(f"Unable to find a primary key for {fc_table_name}, which is \
+required for related media extraction.")
         else:
             primary_key_column = primary_key_candidates[0]
 
@@ -287,7 +274,15 @@ def convert_gpkg_to_gdb(gpkg, gdb, tmp_dir):
             fc_relations = get_gpkg_media_relations(db_cursor, fc_table_name)
             if len(fc_relations) > 0:
                 log(f"Attaching images for {len(fc_relations)} relations to {gdb_fc_name}.")
-                attach_related_images(db_cursor, fc_relations, gdb_layer, tmp_img_folder_path, img_match_table, img_match_field_name, img_match_file_field_name)
+                attach_related_images(
+                    db_cursor,
+                    fc_relations,
+                    gdb_layer,
+                    tmp_img_folder_path,
+                    img_match_table,
+                    IMG_MATCH_FIELD_NAME,
+                    IMG_MATCH_FILE_FIELD_NAME
+                )
             else:
                 log(f"No related media tables found for {gdb_fc_name}.")
 
@@ -304,10 +299,12 @@ def main(gpkg_path, output_gdb_path, tmp_dir):
         arcpy.env.workspace = gpkg_path
         arcpy.env.overwriteOutput = True
 
-        gpkg_desc = arcpy.da.Describe(gpkg_path)
-        if not arcpy.Exists(gpkg_path) or gpkg_desc['dataType'] != 'Workspace' or not gpkg_desc['name'].endswith('.gpkg'):
-            raise RuntimeError(f"Path does not point to a valid GeoPackage file: {gpkg_path}")
+        if not arcpy.Exists(gpkg_path):
+            raise RuntimeError(f"There is no file at this location: {gpkg_path}")
 
+        gpkg_desc = arcpy.da.Describe(gpkg_path)
+        if gpkg_desc['dataType'] != 'Workspace' or not gpkg_desc['name'].endswith('.gpkg'):
+            raise RuntimeError(f"Path does not point to a valid GeoPackage file: {gpkg_path}")
 
         if not arcpy.Exists(output_gdb_path):
             raise RuntimeError("Output geodatabase path does not exist.")
@@ -316,8 +313,8 @@ def main(gpkg_path, output_gdb_path, tmp_dir):
         output_type = arcpy.Describe(output_gdb_path).dataType
         if output_type == 'Workspace':
             # TODO: is there a more detailed check I can do? Other things qualify as
-            # workspaces, too. If provided via script tool, I can do validations on that input,
-            # but if running as a standalone script this could cause unhandled errors.
+            # workspaces, too. If provided via script tool, I can do validations on that
+            # input, but if running as a standalone script this could cause unhandled errors.
             log("Output is a geodatabase.")
             gdb = output_gdb_path
 
@@ -336,7 +333,8 @@ please rename either the GeoPackage or the Geodatabase and try again.")
                 delete_gdb_on_failure = True
 
         else:
-            raise RuntimeError(f"Invalid option provided for output path. Must either be a folder or a geodatabase. Received: {output_gdb_path}")
+            raise RuntimeError(f"Invalid option provided for output path. Must either be \
+a folder or a geodatabase. Received: {output_gdb_path}")
 
         # Ensure the base tmp_dir exists. I'll create temporary folders within
         # it to ensure there are no naming collisions.
@@ -353,11 +351,11 @@ please rename either the GeoPackage or the Geodatabase and try again.")
         error_msg = str(e)
         if "000464" in error_msg or "000210" in error_msg:
 
-            arcpy.AddError("ERROR: Unable to get an exclusive lock on the data. Ensure that it is not open \
-in any other programs, then try again.")
+            arcpy.AddError("ERROR: Unable to get an exclusive lock on the data. Ensure \
+that it is not open in any other programs, then try again.")
         else:
-            arcpy.AddError("Unhandled execution error. Please restore your dataset to its original \
-condition, close all other programs that may be accessing the data, and try again.")
+            arcpy.AddError("Unhandled execution error. Please restore your dataset to its \
+original condition, close all other programs that may be accessing the data, and try again.")
             arcpy.AddError(f"Received: {error_msg}")
 
     except Exception as e:
@@ -377,29 +375,32 @@ condition, close all other programs that may be accessing the data, and try agai
             log(f"Removing temp folder we created: {tmp_dir}")
             shutil.rmtree(pathlib.Path(tmp_dir))
 
-
+# See the bundled ArcGIS Pro Toolbox Script (gpkg-related-tables-tools.atbx) for running
+# this script from the ArcGIS Pro interface instead of a command line.
 if __name__ == '__main__':
-    # If any additional arguments are provided, assume the script is being called from
-    # a command line and parse the expected arguments. Otherwise use the default fixtures
-    if len(sys.argv) > 1:
-        parser = argparse.ArgumentParser(description="""
-    This script takes a GeoPackage and converts it to a File Geodatabase. If there are images
-    related to features through the Related Tables extension, it will attach them to the
-    File Geodatabase so they can be viewed in ArcGIS Pro.
-        """
-        )
-        parser.add_argument("gpkg_path",
-            help="A file path to a GeoPackage (.gpkg) file that may contain related table images."
-        )
-        parser.add_argument("gdb_path",
-            help="Either a path to a File Geodatabase where you want to append the data, or a \
-    folder where a Geodatabase can be created."
-        )
-        parser.add_argument("tmp_path",
-            help="A directory where it's safe for the script to create temporary image files, \
-    which is required for attaching them to the Geodatabase."
-        )
-        args = parser.parse_args()
-        main(args.gpkg_path, args.gdb_path, args.tmp_path)
-    else:
-        main(GPKG_PATH, OUTPUT_GDB_PATH, TMP_DIR_PATH)
+    parser = argparse.ArgumentParser(description="""
+This script takes a GeoPackage and converts it to a File Geodatabase. If there are images
+related to features through the Related Tables extension, it will attach them to the
+File Geodatabase so they can be viewed in ArcGIS Pro.
+    """)
+    parser.add_argument("gpkg_path",
+        help="A file path to a GeoPackage (.gpkg) file that may contain related table images."
+    )
+    parser.add_argument("gdb_path",
+        help="Either a path to a File Geodatabase where you want to append the data, or a \
+folder where a Geodatabase can be created."
+    )
+    parser.add_argument("tmp_path",
+        help="A directory where it's safe for the script to create temporary image files, \
+which is required for attaching them to the Geodatabase."
+    )
+    args = parser.parse_args()
+    main(args.gpkg_path, args.gdb_path, args.tmp_path)
+
+# For adding this to a script tool in ArcGIS Pro, remove the above conditional block
+# for __name__ and uncomment the below.
+#if __name__ == "__main__":
+#    gpkg_path = arcpy.GetParameterAsText(0)
+#    gdb_path = arcpy.GetParameterAsText(1)
+#    tmp_dir = arcpy.GetParameterAsText(2)
+#    main(gpkg_path, gdb_path, tmp_dir)
